@@ -12,13 +12,21 @@ const app = Fastify({ logger: true });
 // ==========================================
 // ROTA DE HEALTH CHECK
 // ==========================================
-app.get("/api/health", async () => {
+app.get("/api/health", async (_request, reply) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
-    return { status: "ok", database: "Conectado ao Neon com sucesso!" };
+
+    return {
+      status: "ok",
+      database: "Conectado ao Neon com sucesso!",
+    };
   } catch (error) {
     app.log.error(error);
-    return { status: "error", message: "Erro ao conectar no banco de dados." };
+
+    return reply.status(503).send({
+      status: "error",
+      message: "Erro ao conectar no banco de dados.",
+    });
   }
 });
 
