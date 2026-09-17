@@ -1,0 +1,106 @@
+// backend/prisma/schema.prisma
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Nota {
+  numeroNf         String     @id // Chave normalizada (ex: NF12345)
+  numeroNfOriginal String
+  placa            String? // Chave normalizada da placa
+  placaOriginal    String?
+  peso             Float?
+  pesoLiquido      Float?
+  valor            Float?
+  vendedor         String?
+  cliente          String?
+  codigoCliente    String?
+  cidade           String?
+  bairro           String?
+  endereco         String?
+  motorista        String?
+  descricao        String?
+  emailVendedor    String?
+  emailLogistica   String?
+  unidade          String     @default("kg") // "kg" ou "un"
+  lote             String?
+  importadoPor     Json? // Guarda { nome, email }
+  importadoEm      DateTime   @default(now())
+  qtdItens         Int        @default(0)
+  itens            ItemNota[]
+}
+
+model ItemNota {
+  id            String @id @default(uuid())
+  notaNumeroNf  String
+  nota          Nota   @relation(fields: [notaNumeroNf], references: [numeroNf], onDelete: Cascade)
+  codigo        String
+  descricao     String
+  pesoLiquido   Float  @default(0)
+  quantidade    Float  @default(0)
+  valorUnitario Float  @default(0)
+  valorTotal    Float  @default(0)
+}
+
+model Ocorrencia {
+  id               String   @id @default(uuid())
+  numeroNf         String
+  numeroNfOriginal String
+  placa            String?
+  cliente          String?
+  vendedor         String?
+  motorista        String?
+  cidade           String?
+  motivo           String
+  observacao       String?
+  unidade          String   @default("kg")
+  itens            Json? // Guarda a lista de itens afetados e suas quebras/devoluções
+  totalQtd         Float    @default(0)
+  totalPeso        Float    @default(0)
+  totalValor       Float    @default(0)
+  valorNota        Float    @default(0)
+  pesoNota         Float    @default(0)
+  para             String?
+  cc               String?
+  criadoPor        Json? // Guarda { uid, nome, email }
+  criadoPorEmail   String
+  dataRef          String // Formato YYYY-MM-DD para filtros rápidos
+  criadoEm         DateTime @default(now())
+}
+
+model Retencao {
+  id             String   @id @default(uuid())
+  placa          String // Chave normalizada
+  placaOriginal  String
+  nfOrigem       String
+  nfs            Json // Array com as NFs da carga consolidada
+  quantidadeNfs  Int      @default(0)
+  totalValor     Float    @default(0)
+  totalPeso      Float    @default(0)
+  totalItens     Int      @default(0)
+  motoristas     Json // Array de motoristas
+  vendedores     Json // Resumo por vendedor
+  motivo         String?
+  para           String?
+  cc             String?
+  criadoPor      Json?
+  criadoPorEmail String
+  dataRef        String // Formato YYYY-MM-DD
+  criadoEm       DateTime @default(now())
+}
+
+
