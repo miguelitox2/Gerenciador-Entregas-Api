@@ -340,26 +340,6 @@ app.post("/api/importar-planilha", async (request, reply) => {
     }
 
     const buffer = await data.toBuffer();
-    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
-    const sheetName = workbook.SheetNames[0];
-
-    if (!sheetName) {
-      return reply
-        .status(400)
-        .send({ error: "Nenhuma aba encontrada na planilha." });
-    }
-
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-      defval: "",
-      raw: true,
-    });
-
-    if (rows.length === 0) {
-      return reply.status(400).send({
-        error: "A planilha está vazia ou em um formato inválido.",
-      });
-    }
 
     const texto = (value: unknown): string => {
       if (value === null || value === undefined) return "";
@@ -368,7 +348,9 @@ app.post("/api/importar-planilha", async (request, reply) => {
 
     const numero = (value: unknown): number => {
       if (value === null || value === undefined || value === "") return 0;
-      if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+      if (typeof value === "number") {
+        return Number.isFinite(value) ? value : 0;
+      }
 
       const valor = String(value).trim();
       if (!valor) return 0;
@@ -381,12 +363,143 @@ app.post("/api/importar-planilha", async (request, reply) => {
       return Number.isFinite(resultado) ? resultado : 0;
     };
 
+    const decodificarHtml = (value: string): string => {
+      return value
+        .replace(/<br\s*\/?>/gi, " ")
+        .replace(/<[^>]*>/g, "")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&#(\d+);/g, (_match, code) =>
+          String.fromCharCode(Number(code)),
+        )
+        .replace(/&#x([0-9a-f]+);/gi, (_match, code) =>
+          String.fromCharCode(parseInt(code, 16)),
+        )
+        .trim();
+    };
+
+    const normalizarCabecalho = (value: string): string => {
+      return value
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+    };
+
+    const extrairLinhasHtml = (html: string): Record<string, unknown>[] => {
+      const trs = [...html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)];
+
+      if (trs.length === 0) return [];
+
+      const linhas = trs.map((match) => {
+        const celulas = [
+          ...match[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi),
+        ];
+
+        return celulas.map((cell) => decodificarHtml(cell[1]));
+      });
+
+      const indiceCabecalho = linhas.findIndex(
+        (linha) =>
+          linha.length > 0 &&
+          linha.some(
+            (celula) =>
+              normalizarCabecalho(celula) === "numeronf" ||
+              (normalizarCabecalho(celula).includes("numero") &&
+                normalizarCabecalho(celula).includes("nf")),
+          ),
+      );
+
+      if (indiceCabecalho === -1) return [];
+
+      const cabecalhos = linhas[indiceCabecalho];
+
+      return linhas
+        .slice(indiceCabecalho + 1)
+        .filter((linha) => linha.some((celula) => celula !== ""))
+        .map((linha) => {
+          const objeto: Record<string, unknown> = {};
+
+          cabecalhos.forEach((cabecalho, index) => {
+            if (cabecalho) {
+              objeto[cabecalho] = linha[index] ?? "";
+            }
+          });
+
+          return objeto;
+        });
+    };
+
+    let rows: Record<string, unknown>[] = [];
+
+    // O arquivo fornecido é um HTML contendo uma tabela, apesar de possuir
+    // extensão .xls. Nesse caso, fazemos o parse do HTML em Latin-1 para
+    // preservar corretamente caracteres como "Número NF", "Código" e "Descrição".
+    const inicioArquivo = buffer
+      .subarray(0, Math.min(buffer.length, 2000))
+      .toString("latin1");
+
+    if (/<table\b/i.test(inicioArquivo)) {
+      rows = extrairLinhasHtml(buffer.toString("latin1"));
+    } else {
+      const workbook = XLSX.read(buffer, {
+        type: "buffer",
+        cellDates: true,
+      });
+
+      const sheetName = workbook.SheetNames[0];
+
+      if (!sheetName) {
+        return reply.status(400).send({
+          error: "Nenhuma aba encontrada na planilha.",
+        });
+      }
+
+      const sheet = workbook.Sheets[sheetName];
+
+      rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        defval: "",
+        raw: true,
+      });
+    }
+
+    if (rows.length === 0) {
+      return reply.status(400).send({
+        error: "A planilha está vazia ou em um formato inválido.",
+      });
+    }
+
+    // Localiza a coluna de NF de forma tolerante a acentos e pequenas
+    // diferenças de formatação do cabeçalho.
+    const primeiraLinha = rows[0];
+
+    const chaveNumeroNf = Object.keys(primeiraLinha).find((chave) => {
+      const normalizada = normalizarCabecalho(chave);
+
+      return (
+        normalizada === "numeronf" ||
+        (normalizada.includes("numero") && normalizada.includes("nf"))
+      );
+    });
+
+    if (!chaveNumeroNf) {
+      return reply.status(400).send({
+        error:
+          'Não foi encontrada nenhuma coluna de número da NF na planilha. Verifique se o arquivo possui a coluna "Número NF".',
+      });
+    }
+
     // Cada linha da planilha representa um item da NF.
     // Agrupamos primeiro para não sobrescrever os itens anteriores.
     const notasAgrupadas = new Map<string, Record<string, unknown>[]>();
 
     for (const row of rows) {
-      const numeroNf = texto(row["Número NF"]);
+      const numeroNf = texto(row[chaveNumeroNf]);
+
       if (!numeroNf) continue;
 
       const grupo = notasAgrupadas.get(numeroNf) || [];
@@ -397,22 +510,30 @@ app.post("/api/importar-planilha", async (request, reply) => {
     if (notasAgrupadas.size === 0) {
       return reply.status(400).send({
         error:
-          'Não foi encontrada nenhuma coluna "Número NF" com dados válidos.',
+          "A coluna de número da NF foi encontrada, mas não possui dados válidos.",
       });
     }
 
     let totalItensImportados = 0;
 
+    const coluna = (row: Record<string, unknown>, nome: string) => {
+      const chave = Object.keys(row).find(
+        (key) => normalizarCabecalho(key) === normalizarCabecalho(nome),
+      );
+
+      return chave ? row[chave] : "";
+    };
+
     for (const [numeroNf, linhas] of notasAgrupadas) {
       const primeiraLinha = linhas[0];
 
       const itens = linhas.map((row) => ({
-        codigo: texto(row["Código item"]),
-        descricao: texto(row["Descrição item"]),
-        pesoLiquido: numero(row["Peso total liquido"]),
+        codigo: texto(coluna(row, "Código item")),
+        descricao: texto(coluna(row, "Descrição item")),
+        pesoLiquido: numero(coluna(row, "Peso total liquido")),
         // A planilha não possui coluna de quantidade.
         quantidade: 1,
-        valorUnitario: numero(row["Valor unitário do item"]),
+        valorUnitario: numero(coluna(row, "Valor unitário do item")),
         // A planilha não possui valor total do item.
         valorTotal: 0,
       }));
@@ -423,18 +544,18 @@ app.post("/api/importar-planilha", async (request, reply) => {
         where: { numeroNf },
         update: {
           numeroNfOriginal: numeroNf,
-          placa: texto(primeiraLinha["Placa"]),
-          cliente: texto(primeiraLinha["Cliente"]),
-          peso: numero(primeiraLinha["Peso"]),
-          pesoLiquido: numero(primeiraLinha["Peso total liquido"]),
-          vendedor: texto(primeiraLinha["Vendedor"]),
-          codigoCliente: texto(primeiraLinha["Código cliente"]),
-          cidade: texto(primeiraLinha["Cidade"]),
-          bairro: texto(primeiraLinha["Bairro"]),
-          endereco: texto(primeiraLinha["Endereço"]),
-          motorista: texto(primeiraLinha["Motorista"]),
-          unidade: texto(primeiraLinha["Unidade"]) || "kg",
-          descricao: texto(primeiraLinha["Descrição"]),
+          placa: texto(coluna(primeiraLinha, "Placa")),
+          cliente: texto(coluna(primeiraLinha, "Cliente")),
+          peso: numero(coluna(primeiraLinha, "Peso")),
+          pesoLiquido: numero(coluna(primeiraLinha, "Peso total liquido")),
+          vendedor: texto(coluna(primeiraLinha, "Vendedor")),
+          codigoCliente: texto(coluna(primeiraLinha, "Código cliente")),
+          cidade: texto(coluna(primeiraLinha, "Cidade")),
+          bairro: texto(coluna(primeiraLinha, "Bairro")),
+          endereco: texto(coluna(primeiraLinha, "Endereço")),
+          motorista: texto(coluna(primeiraLinha, "Motorista")),
+          unidade: texto(coluna(primeiraLinha, "Unidade")) || "kg",
+          descricao: texto(coluna(primeiraLinha, "Descrição")),
           qtdItens: itens.length,
           itens: {
             deleteMany: {},
@@ -444,19 +565,19 @@ app.post("/api/importar-planilha", async (request, reply) => {
         create: {
           numeroNf,
           numeroNfOriginal: numeroNf,
-          placa: texto(primeiraLinha["Placa"]),
-          cliente: texto(primeiraLinha["Cliente"]),
-          peso: numero(primeiraLinha["Peso"]),
-          pesoLiquido: numero(primeiraLinha["Peso total liquido"]),
+          placa: texto(coluna(primeiraLinha, "Placa")),
+          cliente: texto(coluna(primeiraLinha, "Cliente")),
+          peso: numero(coluna(primeiraLinha, "Peso")),
+          pesoLiquido: numero(coluna(primeiraLinha, "Peso total liquido")),
           valor: 0,
-          vendedor: texto(primeiraLinha["Vendedor"]),
-          codigoCliente: texto(primeiraLinha["Código cliente"]),
-          cidade: texto(primeiraLinha["Cidade"]),
-          bairro: texto(primeiraLinha["Bairro"]),
-          endereco: texto(primeiraLinha["Endereço"]),
-          motorista: texto(primeiraLinha["Motorista"]),
-          unidade: texto(primeiraLinha["Unidade"]) || "kg",
-          descricao: texto(primeiraLinha["Descrição"]),
+          vendedor: texto(coluna(primeiraLinha, "Vendedor")),
+          codigoCliente: texto(coluna(primeiraLinha, "Código cliente")),
+          cidade: texto(coluna(primeiraLinha, "Cidade")),
+          bairro: texto(coluna(primeiraLinha, "Bairro")),
+          endereco: texto(coluna(primeiraLinha, "Endereço")),
+          motorista: texto(coluna(primeiraLinha, "Motorista")),
+          unidade: texto(coluna(primeiraLinha, "Unidade")) || "kg",
+          descricao: texto(coluna(primeiraLinha, "Descrição")),
           qtdItens: itens.length,
           itens: { create: itens },
         },
