@@ -514,8 +514,6 @@ app.post("/api/importar-planilha", async (request, reply) => {
       });
     }
 
-    let totalItensImportados = 0;
-
     const coluna = (row: Record<string, unknown>, nome: string) => {
       const chave = Object.keys(row).find(
         (key) => normalizarCabecalho(key) === normalizarCabecalho(nome),
@@ -524,25 +522,23 @@ app.post("/api/importar-planilha", async (request, reply) => {
       return chave ? row[chave] : "";
     };
 
-    for (const [numeroNf, linhas] of notasAgrupadas) {
-      const primeiraLinha = linhas[0];
+    // Preparamos todos os dados antes de acessar o banco.
+    const operacoes = Array.from(notasAgrupadas.entries()).map(
+      ([numeroNf, linhas]) => {
+        const primeiraLinha = linhas[0];
 
-      const itens = linhas.map((row) => ({
-        codigo: texto(coluna(row, "Código item")),
-        descricao: texto(coluna(row, "Descrição item")),
-        pesoLiquido: numero(coluna(row, "Peso total liquido")),
-        // A planilha não possui coluna de quantidade.
-        quantidade: 1,
-        valorUnitario: numero(coluna(row, "Valor unitário do item")),
-        // A planilha não possui valor total do item.
-        valorTotal: 0,
-      }));
+        const itens = linhas.map((row) => ({
+          codigo: texto(coluna(row, "Código item")),
+          descricao: texto(coluna(row, "Descrição item")),
+          pesoLiquido: numero(coluna(row, "Peso total liquido")),
+          // A planilha não possui coluna de quantidade.
+          quantidade: 1,
+          valorUnitario: numero(coluna(row, "Valor unitário do item")),
+          // A planilha não possui valor total do item.
+          valorTotal: 0,
+        }));
 
-      totalItensImportados += itens.length;
-
-      await prisma.nota.upsert({
-        where: { numeroNf },
-        update: {
+        const dadosNota = {
           numeroNfOriginal: numeroNf,
           placa: texto(coluna(primeiraLinha, "Placa")),
           cliente: texto(coluna(primeiraLinha, "Cliente")),
@@ -557,32 +553,47 @@ app.post("/api/importar-planilha", async (request, reply) => {
           unidade: texto(coluna(primeiraLinha, "Unidade")) || "kg",
           descricao: texto(coluna(primeiraLinha, "Descrição")),
           qtdItens: itens.length,
-          itens: {
-            deleteMany: {},
-            create: itens,
-          },
-        },
-        create: {
-          numeroNf,
-          numeroNfOriginal: numeroNf,
-          placa: texto(coluna(primeiraLinha, "Placa")),
-          cliente: texto(coluna(primeiraLinha, "Cliente")),
-          peso: numero(coluna(primeiraLinha, "Peso")),
-          pesoLiquido: numero(coluna(primeiraLinha, "Peso total liquido")),
-          valor: 0,
-          vendedor: texto(coluna(primeiraLinha, "Vendedor")),
-          codigoCliente: texto(coluna(primeiraLinha, "Código cliente")),
-          cidade: texto(coluna(primeiraLinha, "Cidade")),
-          bairro: texto(coluna(primeiraLinha, "Bairro")),
-          endereco: texto(coluna(primeiraLinha, "Endereço")),
-          motorista: texto(coluna(primeiraLinha, "Motorista")),
-          unidade: texto(coluna(primeiraLinha, "Unidade")) || "kg",
-          descricao: texto(coluna(primeiraLinha, "Descrição")),
-          qtdItens: itens.length,
-          itens: { create: itens },
-        },
-      });
+        };
+
+        return { numeroNf, dadosNota, itens };
+      },
+    );
+
+    // Processamos em lotes para evitar centenas de operações sequenciais
+    // no Neon e reduzir bastante o tempo da importação.
+    // Mantemos o upsert aninhado para respeitar exatamente a estrutura
+    // atual do Prisma, sem depender do nome interno do model de itens.
+    const TAMANHO_LOTE = 10;
+
+    for (let inicio = 0; inicio < operacoes.length; inicio += TAMANHO_LOTE) {
+      const lote = operacoes.slice(inicio, inicio + TAMANHO_LOTE);
+
+      await Promise.all(
+        lote.map(async ({ numeroNf, dadosNota, itens }) => {
+          await prisma.nota.upsert({
+            where: { numeroNf },
+            update: {
+              ...dadosNota,
+              itens: {
+                deleteMany: {},
+                create: itens,
+              },
+            },
+            create: {
+              numeroNf,
+              ...dadosNota,
+              valor: 0,
+              itens: { create: itens },
+            },
+          });
+        }),
+      );
     }
+
+    const totalItensImportados = operacoes.reduce(
+      (total, operacao) => total + operacao.itens.length,
+      0,
+    );
 
     return {
       success: true,
