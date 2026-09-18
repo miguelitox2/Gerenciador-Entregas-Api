@@ -76,6 +76,7 @@ app.post("/api/login", async (request, reply) => {
       user: {
         id: user.id,
         name: user.name,
+        cargo: user.cargo,
         email: user.email,
       },
     };
@@ -91,6 +92,7 @@ app.get("/api/users", async (request, reply) => {
       select: {
         id: true,
         name: true,
+        cargo: true,
         email: true,
         createdAt: true,
         updatedAt: true,
@@ -113,6 +115,7 @@ app.get("/api/users/:id", async (request, reply) => {
       select: {
         id: true,
         name: true,
+        cargo: true,
         email: true,
         createdAt: true,
         updatedAt: true,
@@ -134,9 +137,10 @@ app.post("/api/users", async (request, reply) => {
   try {
     const body = request.body as any;
 
-    if (!body.name || !body.email || !body.password) {
+    if (!body.name || !body.cargo || !body.email || !body.password) {
       return reply.status(400).send({
-        error: "Nome, e-mail e senha são obrigatórios para criar um usuário.",
+        error:
+          "Nome, cargo, e-mail e senha são obrigatórios para criar um usuário.",
       });
     }
 
@@ -156,13 +160,15 @@ app.post("/api/users", async (request, reply) => {
 
     const novoUser = await prisma.user.create({
       data: {
-        name: body.name,
+        name: String(body.name).trim(),
+        cargo: String(body.cargo).trim(),
         email: emailNormalizado,
         passwordHash,
       },
       select: {
         id: true,
         name: true,
+        cargo: true,
         email: true,
         createdAt: true,
       },
@@ -185,7 +191,8 @@ app.put("/api/users/:id", async (request, reply) => {
     const body = request.body as any;
 
     const dataToUpdate: any = {};
-    if (body.name) dataToUpdate.name = body.name;
+    if (body.name) dataToUpdate.name = String(body.name).trim();
+    if (body.cargo) dataToUpdate.cargo = String(body.cargo).trim();
     if (body.email)
       dataToUpdate.email = String(body.email).trim().toLowerCase();
 
@@ -199,6 +206,7 @@ app.put("/api/users/:id", async (request, reply) => {
       select: {
         id: true,
         name: true,
+        cargo: true,
         email: true,
         updatedAt: true,
       },
@@ -332,63 +340,140 @@ app.post("/api/importar-planilha", async (request, reply) => {
     }
 
     const buffer = await data.toBuffer();
-    const workbook = XLSX.read(buffer, { type: "buffer" });
+    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
     const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet) as any[];
 
-    if (!rows || rows.length === 0) {
+    if (!sheetName) {
       return reply
         .status(400)
-        .send({ error: "A planilha está vazia ou em um formato inválido." });
+        .send({ error: "Nenhuma aba encontrada na planilha." });
     }
 
-    let importadasCount = 0;
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+      defval: "",
+      raw: true,
+    });
+
+    if (rows.length === 0) {
+      return reply.status(400).send({
+        error: "A planilha está vazia ou em um formato inválido.",
+      });
+    }
+
+    const texto = (value: unknown): string => {
+      if (value === null || value === undefined) return "";
+      return String(value).trim();
+    };
+
+    const numero = (value: unknown): number => {
+      if (value === null || value === undefined || value === "") return 0;
+      if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+
+      const valor = String(value).trim();
+      if (!valor) return 0;
+
+      const normalizado = valor.includes(",")
+        ? valor.replace(/\./g, "").replace(",", ".")
+        : valor;
+
+      const resultado = Number(normalizado);
+      return Number.isFinite(resultado) ? resultado : 0;
+    };
+
+    // Cada linha da planilha representa um item da NF.
+    // Agrupamos primeiro para não sobrescrever os itens anteriores.
+    const notasAgrupadas = new Map<string, Record<string, unknown>[]>();
 
     for (const row of rows) {
-      const numeroNf = String(row.NF || row.Nota || row.numeroNf || "").trim();
-
+      const numeroNf = texto(row["Número NF"]);
       if (!numeroNf) continue;
+
+      const grupo = notasAgrupadas.get(numeroNf) || [];
+      grupo.push(row);
+      notasAgrupadas.set(numeroNf, grupo);
+    }
+
+    if (notasAgrupadas.size === 0) {
+      return reply.status(400).send({
+        error:
+          'Não foi encontrada nenhuma coluna "Número NF" com dados válidos.',
+      });
+    }
+
+    let totalItensImportados = 0;
+
+    for (const [numeroNf, linhas] of notasAgrupadas) {
+      const primeiraLinha = linhas[0];
+
+      const itens = linhas.map((row) => ({
+        codigo: texto(row["Código item"]),
+        descricao: texto(row["Descrição item"]),
+        pesoLiquido: numero(row["Peso total liquido"]),
+        // A planilha não possui coluna de quantidade.
+        quantidade: 1,
+        valorUnitario: numero(row["Valor unitário do item"]),
+        // A planilha não possui valor total do item.
+        valorTotal: 0,
+      }));
+
+      totalItensImportados += itens.length;
 
       await prisma.nota.upsert({
         where: { numeroNf },
         update: {
-          placa: String(row.Placa || row.placa || ""),
-          cliente: String(row.Cliente || row.cliente || ""),
-          valor: Number(row.Valor || row.valor || 0),
-          peso: Number(row.Peso || row.peso || 0),
-          motorista: String(row.Motorista || row.motorista || ""),
-          cidade: String(row.Cidade || row.cidade || ""),
+          numeroNfOriginal: numeroNf,
+          placa: texto(primeiraLinha["Placa"]),
+          cliente: texto(primeiraLinha["Cliente"]),
+          peso: numero(primeiraLinha["Peso"]),
+          pesoLiquido: numero(primeiraLinha["Peso total liquido"]),
+          vendedor: texto(primeiraLinha["Vendedor"]),
+          codigoCliente: texto(primeiraLinha["Código cliente"]),
+          cidade: texto(primeiraLinha["Cidade"]),
+          bairro: texto(primeiraLinha["Bairro"]),
+          endereco: texto(primeiraLinha["Endereço"]),
+          motorista: texto(primeiraLinha["Motorista"]),
+          unidade: texto(primeiraLinha["Unidade"]) || "kg",
+          descricao: texto(primeiraLinha["Descrição"]),
+          qtdItens: itens.length,
+          itens: {
+            deleteMany: {},
+            create: itens,
+          },
         },
         create: {
           numeroNf,
           numeroNfOriginal: numeroNf,
-          placa: String(row.Placa || row.placa || ""),
-          cliente: String(row.Cliente || row.cliente || ""),
-          valor: Number(row.Valor || row.valor || 0),
-          peso: Number(row.Peso || row.peso || 0),
-          pesoLiquido: Number(row.PesoLiquido || row.pesoLiquido || 0),
-          vendedor: String(row.Vendedor || row.vendedor || ""),
-          cidade: String(row.Cidade || row.cidade || ""),
-          motorista: String(row.Motorista || row.motorista || ""),
-          unidade: "kg",
-          qtdItens: 1,
+          placa: texto(primeiraLinha["Placa"]),
+          cliente: texto(primeiraLinha["Cliente"]),
+          peso: numero(primeiraLinha["Peso"]),
+          pesoLiquido: numero(primeiraLinha["Peso total liquido"]),
+          valor: 0,
+          vendedor: texto(primeiraLinha["Vendedor"]),
+          codigoCliente: texto(primeiraLinha["Código cliente"]),
+          cidade: texto(primeiraLinha["Cidade"]),
+          bairro: texto(primeiraLinha["Bairro"]),
+          endereco: texto(primeiraLinha["Endereço"]),
+          motorista: texto(primeiraLinha["Motorista"]),
+          unidade: texto(primeiraLinha["Unidade"]) || "kg",
+          descricao: texto(primeiraLinha["Descrição"]),
+          qtdItens: itens.length,
+          itens: { create: itens },
         },
       });
-
-      importadasCount++;
     }
 
     return {
       success: true,
-      message: `Planilha importada com sucesso! ${importadasCount} notas processadas.`,
-      totalImportadas: importadasCount,
+      message: `Planilha importada com sucesso! ${notasAgrupadas.size} notas e ${totalItensImportados} itens processados.`,
+      totalImportadas: notasAgrupadas.size,
+      totalItens: totalItensImportados,
     };
   } catch (error) {
     app.log.error(error);
-    return reply
-      .status(500)
-      .send({ error: "Erro ao processar e salvar a planilha." });
+    return reply.status(500).send({
+      error: "Erro ao processar e salvar a planilha.",
+    });
   }
 });
 
