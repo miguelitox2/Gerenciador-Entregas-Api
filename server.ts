@@ -5,6 +5,7 @@ import * as XLSX from "xlsx";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import fastifyJwt from "@fastify/jwt";
+import { randomUUID } from "crypto";
 
 const prisma = new PrismaClient();
 const app = Fastify({ logger: true });
@@ -333,6 +334,88 @@ app.post("/api/notas", async (request, reply) => {
 
 app.post("/api/importar-planilha", async (request, reply) => {
   try {
+    const confirmarReimportacao =
+      String(request.headers["x-confirmar-reimportacao"] || "false") === "true";
+
+    let responsavel = String(
+      request.headers["x-responsavel"] || "Usuário do sistema",
+    );
+    let responsavelEmail = String(request.headers["x-responsavel-email"] || "");
+
+    const authorization = request.headers.authorization;
+    if (authorization?.startsWith("Bearer ")) {
+      try {
+        const token = authorization.slice(7);
+        const usuario = app.jwt.verify<{
+          id: string;
+          email: string;
+          name: string;
+        }>(token);
+
+        responsavel = usuario.name || responsavel;
+        responsavelEmail = usuario.email || responsavelEmail;
+      } catch {
+        // Mantém os dados enviados pelo frontend se o token não puder ser lido.
+      }
+    }
+
+    const importacoesHoje = await prisma.$queryRawUnsafe<any[]>(`
+      SELECT
+        id,
+        arquivo,
+        "importadoEm",
+        volume,
+        "totalLinhas",
+        responsavel,
+        "responsavelEmail",
+        status,
+        erros
+      FROM "Importacao"
+      WHERE ("importadoEm" AT TIME ZONE 'America/Sao_Paulo')::date =
+            (NOW() AT TIME ZONE 'America/Sao_Paulo')::date
+      ORDER BY "importadoEm" DESC
+      LIMIT 1
+    `);
+
+    // Compatibilidade com importações feitas antes da criação do histórico.
+    // Se já existem NFs importadas hoje, também exigimos confirmação.
+    if (importacoesHoje.length === 0) {
+      const notasHoje = await prisma.$queryRawUnsafe<any[]>(`
+        SELECT COUNT(*)::int AS total
+        FROM "Nota"
+        WHERE ("importadoEm" AT TIME ZONE 'America/Sao_Paulo')::date =
+              (NOW() AT TIME ZONE 'America/Sao_Paulo')::date
+      `);
+
+      const totalNotasHoje = Number(notasHoje[0]?.total || 0);
+
+      if (totalNotasHoje > 0 && !confirmarReimportacao) {
+        return reply.status(409).send({
+          requiresConfirmation: true,
+          error: "Uma tabela já foi importada hoje.",
+          importacao: {
+            id: "legado",
+            arquivo: "Importação anterior",
+            importadoEm: new Date().toISOString(),
+            volume: totalNotasHoje,
+            totalLinhas: totalNotasHoje,
+            responsavel: "Não identificado",
+            responsavelEmail: null,
+            status: "Sucesso",
+            erros: 0,
+          },
+        });
+      }
+    }
+
+    if (importacoesHoje.length > 0 && !confirmarReimportacao) {
+      return reply.status(409).send({
+        requiresConfirmation: true,
+        error: "Uma tabela já foi importada hoje.",
+        importacao: importacoesHoje[0],
+      });
+    }
+
     const data = await request.file();
 
     if (!data) {
@@ -595,6 +678,31 @@ app.post("/api/importar-planilha", async (request, reply) => {
       0,
     );
 
+    await prisma.$executeRawUnsafe(
+      `
+      INSERT INTO "Importacao" (
+        id,
+        arquivo,
+        "importadoEm",
+        volume,
+        "totalLinhas",
+        responsavel,
+        "responsavelEmail",
+        status,
+        erros
+      )
+      VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8)
+    `,
+      randomUUID(),
+      data.filename,
+      notasAgrupadas.size,
+      rows.length,
+      responsavel,
+      responsavelEmail || null,
+      "Sucesso",
+      0,
+    );
+
     return {
       success: true,
       message: `Planilha importada com sucesso! ${notasAgrupadas.size} notas e ${totalItensImportados} itens processados.`,
@@ -609,6 +717,72 @@ app.post("/api/importar-planilha", async (request, reply) => {
   }
 });
 
+// ==========================================
+// ROTAS DE HISTÓRICO DE IMPORTAÇÕES
+// ==========================================
+
+app.get("/api/importacoes", async (_request, reply) => {
+  try {
+    const importacoes = await prisma.$queryRawUnsafe<any[]>(`
+      SELECT
+        id,
+        arquivo,
+        "importadoEm",
+        volume,
+        "totalLinhas",
+        responsavel,
+        "responsavelEmail",
+        status,
+        erros
+      FROM "Importacao"
+      ORDER BY "importadoEm" DESC
+      LIMIT 50
+    `);
+
+    return { total: importacoes.length, importacoes };
+  } catch (error) {
+    app.log.error(error);
+    return reply.status(500).send({
+      error: "Erro ao buscar histórico de importações.",
+    });
+  }
+});
+
+app.get("/api/importacoes/hoje", async (_request, reply) => {
+  try {
+    const importacoes = await prisma.$queryRawUnsafe<any[]>(`
+      SELECT
+        id,
+        arquivo,
+        "importadoEm",
+        volume,
+        "totalLinhas",
+        responsavel,
+        "responsavelEmail",
+        status,
+        erros
+      FROM "Importacao"
+      WHERE ("importadoEm" AT TIME ZONE 'America/Sao_Paulo')::date =
+            (NOW() AT TIME ZONE 'America/Sao_Paulo')::date
+      ORDER BY "importadoEm" DESC
+      LIMIT 1
+    `);
+
+    return {
+      existe: importacoes.length > 0,
+      importacao: importacoes[0] || null,
+    };
+  } catch (error) {
+    app.log.error(error);
+    return reply.status(500).send({
+      error: "Erro ao verificar importações de hoje.",
+    });
+  }
+});
+
+// ==========================================
+// ROTAS DE NOTAS FISCAIS
+// ==========================================
 // ==========================================
 // ROTAS DE OCORRÊNCIAS
 // ==========================================
@@ -778,6 +952,26 @@ const start = async () => {
     await app.register(fastifyJwt, {
       secret: process.env.JWT_SECRET || "sua-chave-secreta-super-segura-jbs",
     });
+
+    // O histórico é criado automaticamente para não exigir alteração manual no Prisma schema.
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "Importacao" (
+        id TEXT PRIMARY KEY,
+        arquivo TEXT NOT NULL,
+        "importadoEm" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        volume INTEGER NOT NULL DEFAULT 0,
+        "totalLinhas" INTEGER NOT NULL DEFAULT 0,
+        responsavel TEXT NOT NULL DEFAULT 'Usuário do sistema',
+        "responsavelEmail" TEXT,
+        status TEXT NOT NULL DEFAULT 'Sucesso',
+        erros INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+
+    await prisma.$executeRawUnsafe(`
+      CREATE INDEX IF NOT EXISTS "Importacao_importadoEm_idx"
+      ON "Importacao" ("importadoEm")
+    `);
 
     const port = Number(process.env.PORT) || 3001;
     await app.listen({ port, host: "0.0.0.0" });

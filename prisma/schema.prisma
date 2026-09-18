@@ -14,6 +14,7 @@ model User {
   email        String   @unique
   passwordHash String
   name         String
+  cargo        String   @default("Não informado")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
