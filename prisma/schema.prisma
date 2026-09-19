@@ -104,4 +104,16 @@ model Retencao {
   criadoEm       DateTime @default(now())
 }
 
+model Importacao {
+  id               String   @id @default(uuid())
+  arquivo          String
+  importadoEm      DateTime @default(now())
+  volume           Int      @default(0)
+  totalLinhas      Int      @default(0)
+  responsavel      String
+  responsavelEmail String?
+  status            String
+  erros             Int      @default(0)
+}
+
 

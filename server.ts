@@ -357,6 +357,8 @@ app.post("/api/notas", async (request, reply) => {
 });
 
 app.post("/api/importar-planilha", async (request, reply) => {
+  let importacaoId: string | null = null;
+
   try {
     const data = await request.file();
 
@@ -372,6 +374,22 @@ app.post("/api/importar-planilha", async (request, reply) => {
       request.headers["x-responsavel-email"] || "",
     ).trim();
 
+    const arquivo = data.filename || "arquivo-sem-nome";
+
+    const importacao = await prisma.importacao.create({
+      data: {
+        arquivo,
+        responsavel,
+        responsavelEmail: responsavelEmail || null,
+        status: "Processando",
+        volume: 0,
+        totalLinhas: 0,
+        erros: 0,
+      },
+    });
+
+    importacaoId = importacao.id;
+
     const buffer = await data.toBuffer();
 
     const texto = (value: unknown): string => {
@@ -381,6 +399,7 @@ app.post("/api/importar-planilha", async (request, reply) => {
 
     const numero = (value: unknown): number => {
       if (value === null || value === undefined || value === "") return 0;
+
       if (typeof value === "number") {
         return Number.isFinite(value) ? value : 0;
       }
@@ -458,9 +477,7 @@ app.post("/api/importar-planilha", async (request, reply) => {
           const objeto: Record<string, unknown> = {};
 
           cabecalhos.forEach((cabecalho, index) => {
-            if (cabecalho) {
-              objeto[cabecalho] = linha[index] ?? "";
-            }
+            if (cabecalho) objeto[cabecalho] = linha[index] ?? "";
           });
 
           return objeto;
@@ -469,9 +486,6 @@ app.post("/api/importar-planilha", async (request, reply) => {
 
     let rows: Record<string, unknown>[] = [];
 
-    // O arquivo fornecido é um HTML contendo uma tabela, apesar de possuir
-    // extensão .xls. Nesse caso, fazemos o parse do HTML em Latin-1 para
-    // preservar corretamente caracteres como "Número NF", "Código" e "Descrição".
     const inicioArquivo = buffer
       .subarray(0, Math.min(buffer.length, 2000))
       .toString("latin1");
@@ -487,9 +501,7 @@ app.post("/api/importar-planilha", async (request, reply) => {
       const sheetName = workbook.SheetNames[0];
 
       if (!sheetName) {
-        return reply.status(400).send({
-          error: "Nenhuma aba encontrada na planilha.",
-        });
+        throw new Error("Nenhuma aba encontrada na planilha.");
       }
 
       const sheet = workbook.Sheets[sheetName];
@@ -501,13 +513,14 @@ app.post("/api/importar-planilha", async (request, reply) => {
     }
 
     if (rows.length === 0) {
-      return reply.status(400).send({
-        error: "A planilha está vazia ou em um formato inválido.",
-      });
+      throw new Error("A planilha está vazia ou em um formato inválido.");
     }
 
-    // Localiza a coluna de NF de forma tolerante a acentos e pequenas
-    // diferenças de formatação do cabeçalho.
+    await prisma.importacao.update({
+      where: { id: importacaoId },
+      data: { totalLinhas: rows.length },
+    });
+
     const primeiraLinha = rows[0];
 
     const chaveNumeroNf = Object.keys(primeiraLinha).find((chave) => {
@@ -520,14 +533,11 @@ app.post("/api/importar-planilha", async (request, reply) => {
     });
 
     if (!chaveNumeroNf) {
-      return reply.status(400).send({
-        error:
-          'Não foi encontrada nenhuma coluna de número da NF na planilha. Verifique se o arquivo possui a coluna "Número NF".',
-      });
+      throw new Error(
+        'Não foi encontrada nenhuma coluna de número da NF na planilha. Verifique se o arquivo possui a coluna "Número NF".',
+      );
     }
 
-    // Cada linha da planilha representa um item da NF.
-    // Agrupamos primeiro para não sobrescrever os itens anteriores.
     const notasAgrupadas = new Map<string, Record<string, unknown>[]>();
 
     for (const row of rows) {
@@ -541,10 +551,9 @@ app.post("/api/importar-planilha", async (request, reply) => {
     }
 
     if (notasAgrupadas.size === 0) {
-      return reply.status(400).send({
-        error:
-          "A coluna de número da NF foi encontrada, mas não possui dados válidos.",
-      });
+      throw new Error(
+        "A coluna de número da NF foi encontrada, mas não possui dados válidos.",
+      );
     }
 
     const coluna = (row: Record<string, unknown>, nome: string) => {
@@ -555,7 +564,6 @@ app.post("/api/importar-planilha", async (request, reply) => {
       return chave ? row[chave] : "";
     };
 
-    // Preparamos todos os dados antes de acessar o banco.
     const operacoes = Array.from(notasAgrupadas.entries()).map(
       ([numeroNf, linhas]) => {
         const primeiraLinha = linhas[0];
@@ -564,10 +572,8 @@ app.post("/api/importar-planilha", async (request, reply) => {
           codigo: texto(coluna(row, "Código item")),
           descricao: texto(coluna(row, "Descrição item")),
           pesoLiquido: numero(coluna(row, "Peso total liquido")),
-          // A planilha não possui coluna de quantidade.
           quantidade: 1,
           valorUnitario: numero(coluna(row, "Valor unitário do item")),
-          // A planilha não possui valor total do item.
           valorTotal: 0,
         }));
 
@@ -577,6 +583,7 @@ app.post("/api/importar-planilha", async (request, reply) => {
             nome: responsavel,
             email: responsavelEmail,
           },
+          importadoEm: new Date(),
           placa: texto(coluna(primeiraLinha, "Placa")),
           cliente: texto(coluna(primeiraLinha, "Cliente")),
           peso: numero(coluna(primeiraLinha, "Peso")),
@@ -596,10 +603,6 @@ app.post("/api/importar-planilha", async (request, reply) => {
       },
     );
 
-    // Processamos em lotes para evitar centenas de operações sequenciais
-    // no Neon e reduzir bastante o tempo da importação.
-    // Mantemos o upsert aninhado para respeitar exatamente a estrutura
-    // atual do Prisma, sem depender do nome interno do model de itens.
     const TAMANHO_LOTE = 10;
 
     for (let inicio = 0; inicio < operacoes.length; inicio += TAMANHO_LOTE) {
@@ -632,6 +635,16 @@ app.post("/api/importar-planilha", async (request, reply) => {
       0,
     );
 
+    await prisma.importacao.update({
+      where: { id: importacaoId },
+      data: {
+        volume: notasAgrupadas.size,
+        totalLinhas: rows.length,
+        status: "Sucesso",
+        erros: 0,
+      },
+    });
+
     return {
       success: true,
       message: `Planilha importada com sucesso! ${notasAgrupadas.size} notas e ${totalItensImportados} itens processados.`,
@@ -640,8 +653,50 @@ app.post("/api/importar-planilha", async (request, reply) => {
     };
   } catch (error) {
     app.log.error(error);
+
+    if (importacaoId) {
+      try {
+        await prisma.importacao.update({
+          where: { id: importacaoId },
+          data: {
+            status: "Erro",
+            erros: 1,
+          },
+        });
+      } catch (historicoError) {
+        app.log.error(historicoError);
+      }
+    }
+
     return reply.status(500).send({
-      error: "Erro ao processar e salvar a planilha.",
+      error:
+        error instanceof Error
+          ? error.message
+          : "Erro ao processar e salvar a planilha.",
+    });
+  }
+});
+
+// ==========================================
+// HISTÓRICO DE IMPORTAÇÕES
+// ==========================================
+
+app.get("/api/importacoes", async (_request, reply) => {
+  try {
+    const importacoes = await prisma.importacao.findMany({
+      orderBy: { importadoEm: "desc" },
+      take: 50,
+    });
+
+    return {
+      total: importacoes.length,
+      importacoes,
+    };
+  } catch (error) {
+    app.log.error(error);
+
+    return reply.status(500).send({
+      error: "Erro ao buscar histórico de importações.",
     });
   }
 });
