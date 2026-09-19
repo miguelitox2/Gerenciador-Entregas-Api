@@ -364,6 +364,14 @@ app.post("/api/importar-planilha", async (request, reply) => {
       return reply.status(400).send({ error: "Nenhum arquivo enviado." });
     }
 
+    const responsavel = String(
+      request.headers["x-responsavel"] || "Usuário do sistema",
+    ).trim();
+
+    const responsavelEmail = String(
+      request.headers["x-responsavel-email"] || "",
+    ).trim();
+
     const buffer = await data.toBuffer();
 
     const texto = (value: unknown): string => {
@@ -565,6 +573,10 @@ app.post("/api/importar-planilha", async (request, reply) => {
 
         const dadosNota = {
           numeroNfOriginal: numeroNf,
+          importadoPor: {
+            nome: responsavel,
+            email: responsavelEmail,
+          },
           placa: texto(coluna(primeiraLinha, "Placa")),
           cliente: texto(coluna(primeiraLinha, "Cliente")),
           peso: numero(coluna(primeiraLinha, "Peso")),
