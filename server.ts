@@ -5,6 +5,11 @@ import * as XLSX from "xlsx";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import fastifyJwt from "@fastify/jwt";
+import {
+  enviarEmailOcorrencia,
+  enviarEmailTeste,
+  enviarEmailTesteTemplate,
+} from "./api/services/ocorrenciaEmail";
 
 const prisma = new PrismaClient();
 const app = Fastify({ logger: true });
@@ -782,6 +787,112 @@ app.post("/api/ocorrencias", async (request, reply) => {
   } catch (error) {
     app.log.error(error);
     return reply.status(500).send({ error: "Erro ao registrar a ocorrência." });
+  }
+});
+
+app.post("/api/ocorrencias/:id/enviar-email", async (request, reply) => {
+  try {
+    const { id } = request.params as { id: string };
+
+    const ocorrencia = await prisma.ocorrencia.findUnique({
+      where: { id },
+    });
+
+    if (!ocorrencia) {
+      return reply.status(404).send({
+        error: "Ocorrência não encontrada.",
+      });
+    }
+
+    // Busca a NF original para obter informações adicionais,
+    // como o código do cliente.
+    const nota = await prisma.nota.findUnique({
+      where: {
+        numeroNf: ocorrencia.numeroNf,
+      },
+    });
+
+    const resultado = await enviarEmailOcorrencia(
+      ocorrencia,
+      nota ?? undefined,
+    );
+
+    return {
+      success: true,
+      message: "E-mail enviado com sucesso!",
+      emailId: resultado?.id || null,
+    };
+  } catch (error) {
+    app.log.error(error);
+
+    return reply.status(500).send({
+      error:
+        error instanceof Error
+          ? error.message
+          : "Erro ao enviar o e-mail da ocorrência.",
+    });
+  }
+});
+
+app.post("/api/teste-email", async (request, reply) => {
+  try {
+    const body = request.body as {
+      email?: string;
+    };
+
+    if (!body.email) {
+      return reply.status(400).send({
+        error: "Informe um e-mail para o teste.",
+      });
+    }
+
+    const resultado = await enviarEmailTeste(body.email);
+
+    return {
+      success: true,
+      message: "E-mail de teste enviado com sucesso!",
+      emailId: resultado?.id || null,
+    };
+  } catch (error) {
+    app.log.error(error);
+
+    return reply.status(500).send({
+      error:
+        error instanceof Error
+          ? error.message
+          : "Erro ao enviar e-mail de teste.",
+    });
+  }
+});
+
+app.post("/api/teste-email-template", async (request, reply) => {
+  try {
+    const body = request.body as {
+      email?: string;
+    };
+
+    if (!body.email) {
+      return reply.status(400).send({
+        error: "Informe um e-mail para o teste.",
+      });
+    }
+
+    const resultado = await enviarEmailTesteTemplate(body.email);
+
+    return {
+      success: true,
+      message: "Template enviado com sucesso!",
+      emailId: resultado?.id || null,
+    };
+  } catch (error) {
+    app.log.error(error);
+
+    return reply.status(500).send({
+      error:
+        error instanceof Error
+          ? error.message
+          : "Erro ao enviar template de teste.",
+    });
   }
 });
 
