@@ -20,45 +20,58 @@ model User {
 }
 
 model Nota {
-  numeroNf         String     @id // Chave normalizada (ex: NF12345)
+  numeroNf         String @id
   numeroNfOriginal String
-  placa            String? // Chave normalizada da placa
-  placaOriginal    String?
-  peso             Float?
-  pesoLiquido      Float?
-  valor            Float?
-  vendedor         String?
-  cliente          String?
-  codigoCliente    String?
-  cidade           String?
-  bairro           String?
-  endereco         String?
-  motorista        String?
-  descricao        String?
-  emailVendedor    String?
-  emailLogistica   String?
-  unidade          String     @default("kg") // "kg" ou "un"
-  lote             String?
-  importadoPor     Json? // Guarda { nome, email }
-  importadoEm      DateTime   @default(now())
-  qtdItens         Int        @default(0)
-  itens            ItemNota[]
+
+  placa         String?
+  placaOriginal String?
+
+  peso        Float?
+  pesoLiquido Float?
+  valor       Float?
+
+  vendedor      String?
+  cliente       String?
+  codigoCliente String?
+
+  cidade   String?
+  bairro   String?
+  endereco String?
+
+  motorista String?
+  descricao String?
+
+  emailVendedor  String?
+  emailLogistica String?
+
+  unidade String  @default("kg")
+  lote    String?
+
+  importadoPor Json?
+  importadoEm  DateTime @default(now())
+
+  qtdItens Int @default(0)
+
+  itens ItemNota[]
 }
 
 model ItemNota {
-  id            String @id @default(uuid())
-  notaNumeroNf  String
-  nota          Nota   @relation(fields: [notaNumeroNf], references: [numeroNf], onDelete: Cascade)
-  codigo        String
-  descricao     String
-  pesoLiquido   Float  @default(0)
-  quantidade    Float  @default(0)
-  valorUnitario Float  @default(0)
-  valorTotal    Float  @default(0)
+  id           String @id @default(uuid())
+  notaNumeroNf String
+
+  nota Nota @relation(fields: [notaNumeroNf], references: [numeroNf], onDelete: Cascade)
+
+  codigo    String
+  descricao String
+
+  pesoLiquido   Float @default(0)
+  quantidade    Float @default(0)
+  valorUnitario Float @default(0)
+  valorTotal    Float @default(0)
 }
 
 model Ocorrencia {
-  id               String   @id @default(uuid())
+  id               String  @id @default(uuid())
   numeroNf         String
   numeroNfOriginal String
   placa            String?
@@ -68,52 +81,95 @@ model Ocorrencia {
   cidade           String?
   motivo           String
   observacao       String?
-  unidade          String   @default("kg")
-  itens            Json? // Guarda a lista de itens afetados e suas quebras/devoluções
-  totalQtd         Float    @default(0)
-  totalPeso        Float    @default(0)
-  totalValor       Float    @default(0)
-  valorNota        Float    @default(0)
-  pesoNota         Float    @default(0)
+  unidade          String  @default("kg")
+  itens            Json?
+  totalQtd         Float   @default(0)
+  totalPeso        Float   @default(0)
+  totalValor       Float   @default(0)
+  valorNota        Float   @default(0)
+  pesoNota         Float   @default(0)
   para             String?
   cc               String?
-  criadoPor        Json? // Guarda { uid, nome, email }
+  criadoPor        Json?
   criadoPorEmail   String
-  dataRef          String // Formato YYYY-MM-DD para filtros rápidos
-  criadoEm         DateTime @default(now())
+  dataRef          String
+
+  status        String    @default("pendente")
+  finalizadoEm  DateTime?
+  finalizadoPor Json?
+
+  criadoEm DateTime @default(now())
+
+  comentarios ComentarioOcorrencia[]
 }
 
 model Retencao {
-  id             String   @id @default(uuid())
-  placa          String // Chave normalizada
-  placaOriginal  String
-  nfOrigem       String
-  nfs            Json // Array com as NFs da carga consolidada
-  quantidadeNfs  Int      @default(0)
-  totalValor     Float    @default(0)
-  totalPeso      Float    @default(0)
-  totalItens     Int      @default(0)
-  motoristas     Json // Array de motoristas
-  vendedores     Json // Resumo por vendedor
-  motivo         String?
-  para           String?
-  cc             String?
+  id String @id @default(uuid())
+
+  placa         String
+  placaOriginal String
+
+  nfOrigem String
+
+  // Array com as NFs da carga consolidada
+  nfs Json
+
+  quantidadeNfs Int @default(0)
+
+  totalValor Float @default(0)
+  totalPeso  Float @default(0)
+  totalItens Int   @default(0)
+
+  // Array de motoristas
+  motoristas Json
+
+  // Resumo por vendedor
+  vendedores Json
+
+  motivo String?
+  para   String?
+  cc     String?
+
   criadoPor      Json?
   criadoPorEmail String
-  dataRef        String // Formato YYYY-MM-DD
-  criadoEm       DateTime @default(now())
+
+  // Formato: YYYY-MM-DD
+  dataRef String
+
+  criadoEm DateTime @default(now())
 }
 
 model Importacao {
-  id               String   @id @default(uuid())
-  arquivo          String
-  importadoEm      DateTime @default(now())
-  volume           Int      @default(0)
-  totalLinhas      Int      @default(0)
+  id String @id @default(uuid())
+
+  arquivo String
+
+  importadoEm DateTime @default(now())
+
+  volume      Int @default(0)
+  totalLinhas Int @default(0)
+
   responsavel      String
   responsavelEmail String?
-  status            String
-  erros             Int      @default(0)
+
+  status String
+
+  erros Int @default(0)
 }
 
+model ComentarioOcorrencia {
+  id String @id @default(uuid())
 
+  ocorrenciaId String
+
+  comentario String
+
+  criadoPor      String
+  criadoPorEmail String?
+
+  criadoEm DateTime @default(now())
+
+  ocorrencia Ocorrencia @relation(fields: [ocorrenciaId], references: [id], onDelete: Cascade)
+
+  @@index([ocorrenciaId])
+}

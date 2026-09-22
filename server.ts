@@ -5,6 +5,7 @@ import * as XLSX from "xlsx";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import fastifyJwt from "@fastify/jwt";
+
 import {
   enviarEmailOcorrencia,
   enviarEmailTeste,
@@ -12,11 +13,21 @@ import {
 } from "./api/services/ocorrenciaEmail";
 
 const prisma = new PrismaClient();
-const app = Fastify({ logger: true });
+
+const app = Fastify({
+  logger: true,
+});
 
 // ==========================================
-// ROTA DE HEALTH CHECK
+// TIPOS AUXILIARES
 // ==========================================
+
+type RequestBody = Record<string, any>;
+
+// ==========================================
+// HEALTH CHECK
+// ==========================================
+
 app.get("/api/health", async (_request, reply) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -41,39 +52,47 @@ app.get("/api/health", async (_request, reply) => {
 
 app.post("/api/login", async (request, reply) => {
   try {
-    const body = request.body as any;
+    const body = request.body as RequestBody;
 
     if (!body.email || !body.password) {
-      return reply
-        .status(400)
-        .send({ error: "E-mail e senha são obrigatórios." });
+      return reply.status(400).send({
+        error: "E-mail e senha são obrigatórios.",
+      });
     }
 
     const emailNormalizado = String(body.email).trim().toLowerCase();
 
-    // Busca o usuário pelo e-mail
     const user = await prisma.user.findUnique({
-      where: { email: emailNormalizado },
+      where: {
+        email: emailNormalizado,
+      },
     });
 
     if (!user) {
-      return reply.status(401).send({ error: "E-mail ou senha inválidos." });
+      return reply.status(401).send({
+        error: "E-mail ou senha inválidos.",
+      });
     }
 
-    // Compara a senha enviada com o hash salvo no banco
     const senhaValida = await bcrypt.compare(body.password, user.passwordHash);
 
     if (!senhaValida) {
-      return reply.status(401).send({ error: "E-mail ou senha inválidos." });
+      return reply.status(401).send({
+        error: "E-mail ou senha inválidos.",
+      });
     }
 
-    // 🔑 Gerando o Token JWT
     const token = app.jwt.sign(
-      { id: user.id, email: user.email, name: user.name },
-      { expiresIn: "7d" },
+      {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+      },
+      {
+        expiresIn: "7d",
+      },
     );
 
-    // Login bem-sucedido (retorna o token e os dados do usuário sem a senha)
     return {
       success: true,
       message: "Login realizado com sucesso!",
@@ -87,11 +106,14 @@ app.post("/api/login", async (request, reply) => {
     };
   } catch (error) {
     app.log.error(error);
-    return reply.status(500).send({ error: "Erro ao realizar login." });
+
+    return reply.status(500).send({
+      error: "Erro ao realizar login.",
+    });
   }
 });
 
-app.get("/api/users", async (request, reply) => {
+app.get("/api/users", async (_request, reply) => {
   try {
     const users = await prisma.user.findMany({
       select: {
@@ -102,21 +124,34 @@ app.get("/api/users", async (request, reply) => {
         createdAt: true,
         updatedAt: true,
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: {
+        createdAt: "desc",
+      },
     });
-    return { total: users.length, users };
+
+    return {
+      total: users.length,
+      users,
+    };
   } catch (error) {
     app.log.error(error);
-    return reply.status(500).send({ error: "Erro ao listar usuários." });
+
+    return reply.status(500).send({
+      error: "Erro ao listar usuários.",
+    });
   }
 });
 
 app.get("/api/users/:id", async (request, reply) => {
   try {
-    const { id } = request.params as { id: string };
+    const { id } = request.params as {
+      id: string;
+    };
 
     const user = await prisma.user.findUnique({
-      where: { id },
+      where: {
+        id,
+      },
       select: {
         id: true,
         name: true,
@@ -128,19 +163,26 @@ app.get("/api/users/:id", async (request, reply) => {
     });
 
     if (!user) {
-      return reply.status(404).send({ error: "Usuário não encontrado." });
+      return reply.status(404).send({
+        error: "Usuário não encontrado.",
+      });
     }
 
-    return { user };
+    return {
+      user,
+    };
   } catch (error) {
     app.log.error(error);
-    return reply.status(500).send({ error: "Erro ao buscar usuário." });
+
+    return reply.status(500).send({
+      error: "Erro ao buscar usuário.",
+    });
   }
 });
 
 app.post("/api/users", async (request, reply) => {
   try {
-    const body = request.body as any;
+    const body = request.body as RequestBody;
 
     if (!body.name || !body.cargo || !body.email || !body.password) {
       return reply.status(400).send({
@@ -152,16 +194,18 @@ app.post("/api/users", async (request, reply) => {
     const emailNormalizado = String(body.email).trim().toLowerCase();
 
     const userExistente = await prisma.user.findUnique({
-      where: { email: emailNormalizado },
+      where: {
+        email: emailNormalizado,
+      },
     });
 
     if (userExistente) {
-      return reply
-        .status(400)
-        .send({ error: "Este e-mail já está cadastrado no sistema." });
+      return reply.status(400).send({
+        error: "Este e-mail já está cadastrado no sistema.",
+      });
     }
 
-    const passwordHash = await bcrypt.hash(body.password, 10);
+    const passwordHash = await bcrypt.hash(String(body.password), 10);
 
     const novoUser = await prisma.user.create({
       data: {
@@ -186,27 +230,43 @@ app.post("/api/users", async (request, reply) => {
     });
   } catch (error) {
     app.log.error(error);
-    return reply.status(500).send({ error: "Erro ao criar usuário." });
+
+    return reply.status(500).send({
+      error: "Erro ao criar usuário.",
+    });
   }
 });
 
 app.put("/api/users/:id", async (request, reply) => {
   try {
-    const { id } = request.params as { id: string };
-    const body = request.body as any;
+    const { id } = request.params as {
+      id: string;
+    };
 
-    const dataToUpdate: any = {};
-    if (body.name) dataToUpdate.name = String(body.name).trim();
-    if (body.cargo) dataToUpdate.cargo = String(body.cargo).trim();
-    if (body.email)
+    const body = request.body as RequestBody;
+
+    const dataToUpdate: RequestBody = {};
+
+    if (body.name) {
+      dataToUpdate.name = String(body.name).trim();
+    }
+
+    if (body.cargo) {
+      dataToUpdate.cargo = String(body.cargo).trim();
+    }
+
+    if (body.email) {
       dataToUpdate.email = String(body.email).trim().toLowerCase();
+    }
 
     if (body.password) {
-      dataToUpdate.passwordHash = await bcrypt.hash(body.password, 10);
+      dataToUpdate.passwordHash = await bcrypt.hash(String(body.password), 10);
     }
 
     const userAtualizado = await prisma.user.update({
-      where: { id },
+      where: {
+        id,
+      },
       data: dataToUpdate,
       select: {
         id: true,
@@ -224,18 +284,23 @@ app.put("/api/users/:id", async (request, reply) => {
     };
   } catch (error) {
     app.log.error(error);
-    return reply
-      .status(500)
-      .send({ error: "Erro ao atualizar usuário (ID pode não existir)." });
+
+    return reply.status(500).send({
+      error: "Erro ao atualizar usuário (ID pode não existir).",
+    });
   }
 });
 
 app.delete("/api/users/:id", async (request, reply) => {
   try {
-    const { id } = request.params as { id: string };
+    const { id } = request.params as {
+      id: string;
+    };
 
     await prisma.user.delete({
-      where: { id },
+      where: {
+        id,
+      },
     });
 
     return {
@@ -244,9 +309,10 @@ app.delete("/api/users/:id", async (request, reply) => {
     };
   } catch (error) {
     app.log.error(error);
-    return reply
-      .status(500)
-      .send({ error: "Erro ao deletar usuário (ID pode não existir)." });
+
+    return reply.status(500).send({
+      error: "Erro ao deletar usuário (ID pode não existir).",
+    });
   }
 });
 
@@ -254,28 +320,46 @@ app.delete("/api/users/:id", async (request, reply) => {
 // ROTAS DE NOTAS FISCAIS
 // ==========================================
 
-app.get("/api/notas", async (request, reply) => {
+app.get("/api/notas", async (_request, reply) => {
   try {
     const notas = await prisma.nota.findMany({
-      include: { itens: true },
-      orderBy: { importadoEm: "desc" },
+      include: {
+        itens: true,
+      },
+      orderBy: {
+        importadoEm: "desc",
+      },
       take: 50,
     });
-    return { total: notas.length, notas };
+
+    return {
+      total: notas.length,
+      notas,
+    };
   } catch (error) {
     app.log.error(error);
-    return reply.status(500).send({ error: "Erro ao buscar notas fiscais." });
+
+    return reply.status(500).send({
+      error: "Erro ao buscar notas fiscais.",
+    });
   }
 });
 
 app.get("/api/notas/:numeroNf", async (request, reply) => {
   try {
-    const { numeroNf } = request.params as { numeroNf: string };
+    const { numeroNf } = request.params as {
+      numeroNf: string;
+    };
+
     const numeroNormalizado = String(numeroNf).trim();
 
     const nota = await prisma.nota.findUnique({
-      where: { numeroNf: numeroNormalizado },
-      include: { itens: true },
+      where: {
+        numeroNf: numeroNormalizado,
+      },
+      include: {
+        itens: true,
+      },
     });
 
     if (!nota) {
@@ -284,9 +368,12 @@ app.get("/api/notas/:numeroNf", async (request, reply) => {
       });
     }
 
-    return { nota };
+    return {
+      nota,
+    };
   } catch (error) {
     app.log.error(error);
+
     return reply.status(500).send({
       error: "Erro ao buscar a Nota Fiscal.",
     });
@@ -295,18 +382,21 @@ app.get("/api/notas/:numeroNf", async (request, reply) => {
 
 app.post("/api/notas", async (request, reply) => {
   try {
-    const body = request.body as any;
+    const body = request.body as RequestBody;
 
     if (!body.numeroNf) {
-      return reply
-        .status(400)
-        .send({ error: "O número da Nota Fiscal é obrigatório." });
+      return reply.status(400).send({
+        error: "O número da Nota Fiscal é obrigatório.",
+      });
     }
 
     const numeroNormalizado = String(body.numeroNf).trim();
 
     const notaSalva = await prisma.nota.upsert({
-      where: { numeroNf: numeroNormalizado },
+      where: {
+        numeroNf: numeroNormalizado,
+      },
+
       update: {
         placa: body.placa,
         peso: body.peso,
@@ -315,27 +405,36 @@ app.post("/api/notas", async (request, reply) => {
         motorista: body.motorista,
         cidade: body.cidade,
       },
+
       create: {
         numeroNf: numeroNormalizado,
         numeroNfOriginal: body.numeroNfOriginal || body.numeroNf,
+
         placa: body.placa,
         placaOriginal: body.placaOriginal,
+
         peso: body.peso || 0,
         pesoLiquido: body.pesoLiquido || 0,
         valor: body.valor || 0,
+
         vendedor: body.vendedor,
         cliente: body.cliente,
         codigoCliente: body.codigoCliente,
+
         cidade: body.cidade,
         bairro: body.bairro,
         endereco: body.endereco,
+
         motorista: body.motorista,
         descricao: body.descricao,
+
         unidade: body.unidade || "kg",
         lote: body.lote,
+
         qtdItens: body.itens?.length || 0,
+
         itens: {
-          create: (body.itens || []).map((item: any) => ({
+          create: (body.itens || []).map((item: RequestBody) => ({
             codigo: item.codigo,
             descricao: item.descricao,
             pesoLiquido: item.pesoLiquido || 0,
@@ -345,7 +444,10 @@ app.post("/api/notas", async (request, reply) => {
           })),
         },
       },
-      include: { itens: true },
+
+      include: {
+        itens: true,
+      },
     });
 
     return {
@@ -355,11 +457,16 @@ app.post("/api/notas", async (request, reply) => {
     };
   } catch (error) {
     app.log.error(error);
-    return reply
-      .status(500)
-      .send({ error: "Erro ao processar a importação da nota fiscal." });
+
+    return reply.status(500).send({
+      error: "Erro ao processar a importação da nota fiscal.",
+    });
   }
 });
+
+// ==========================================
+// IMPORTAÇÃO DE PLANILHAS
+// ==========================================
 
 app.post("/api/importar-planilha", async (request, reply) => {
   let importacaoId: string | null = null;
@@ -368,7 +475,9 @@ app.post("/api/importar-planilha", async (request, reply) => {
     const data = await request.file();
 
     if (!data) {
-      return reply.status(400).send({ error: "Nenhum arquivo enviado." });
+      return reply.status(400).send({
+        error: "Nenhum arquivo enviado.",
+      });
     }
 
     const responsavel = String(
@@ -397,26 +506,39 @@ app.post("/api/importar-planilha", async (request, reply) => {
 
     const buffer = await data.toBuffer();
 
+    // ------------------------------------------
+    // Helpers da importação
+    // ------------------------------------------
+
     const texto = (value: unknown): string => {
-      if (value === null || value === undefined) return "";
+      if (value === null || value === undefined) {
+        return "";
+      }
+
       return String(value).trim();
     };
 
     const numero = (value: unknown): number => {
-      if (value === null || value === undefined || value === "") return 0;
+      if (value === null || value === undefined || value === "") {
+        return 0;
+      }
 
       if (typeof value === "number") {
         return Number.isFinite(value) ? value : 0;
       }
 
       const valor = String(value).trim();
-      if (!valor) return 0;
+
+      if (!valor) {
+        return 0;
+      }
 
       const normalizado = valor.includes(",")
         ? valor.replace(/\./g, "").replace(",", ".")
         : valor;
 
       const resultado = Number(normalizado);
+
       return Number.isFinite(resultado) ? resultado : 0;
     };
 
@@ -450,7 +572,9 @@ app.post("/api/importar-planilha", async (request, reply) => {
     const extrairLinhasHtml = (html: string): Record<string, unknown>[] => {
       const trs = [...html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)];
 
-      if (trs.length === 0) return [];
+      if (trs.length === 0) {
+        return [];
+      }
 
       const linhas = trs.map((match) => {
         const celulas = [
@@ -471,7 +595,9 @@ app.post("/api/importar-planilha", async (request, reply) => {
           ),
       );
 
-      if (indiceCabecalho === -1) return [];
+      if (indiceCabecalho === -1) {
+        return [];
+      }
 
       const cabecalhos = linhas[indiceCabecalho];
 
@@ -482,12 +608,18 @@ app.post("/api/importar-planilha", async (request, reply) => {
           const objeto: Record<string, unknown> = {};
 
           cabecalhos.forEach((cabecalho, index) => {
-            if (cabecalho) objeto[cabecalho] = linha[index] ?? "";
+            if (cabecalho) {
+              objeto[cabecalho] = linha[index] ?? "";
+            }
           });
 
           return objeto;
         });
     };
+
+    // ------------------------------------------
+    // Leitura do arquivo
+    // ------------------------------------------
 
     let rows: Record<string, unknown>[] = [];
 
@@ -522,8 +654,12 @@ app.post("/api/importar-planilha", async (request, reply) => {
     }
 
     await prisma.importacao.update({
-      where: { id: importacaoId },
-      data: { totalLinhas: rows.length },
+      where: {
+        id: importacaoId,
+      },
+      data: {
+        totalLinhas: rows.length,
+      },
     });
 
     const primeiraLinha = rows[0];
@@ -543,15 +679,23 @@ app.post("/api/importar-planilha", async (request, reply) => {
       );
     }
 
+    // ------------------------------------------
+    // Agrupamento das NFs
+    // ------------------------------------------
+
     const notasAgrupadas = new Map<string, Record<string, unknown>[]>();
 
     for (const row of rows) {
       const numeroNf = texto(row[chaveNumeroNf]);
 
-      if (!numeroNf) continue;
+      if (!numeroNf) {
+        continue;
+      }
 
       const grupo = notasAgrupadas.get(numeroNf) || [];
+
       grupo.push(row);
+
       notasAgrupadas.set(numeroNf, grupo);
     }
 
@@ -569,44 +713,76 @@ app.post("/api/importar-planilha", async (request, reply) => {
       return chave ? row[chave] : "";
     };
 
+    // ------------------------------------------
+    // Montagem das operações
+    // ------------------------------------------
+
     const operacoes = Array.from(notasAgrupadas.entries()).map(
       ([numeroNf, linhas]) => {
         const primeiraLinha = linhas[0];
 
         const itens = linhas.map((row) => ({
           codigo: texto(coluna(row, "Código item")),
+
           descricao: texto(coluna(row, "Descrição item")),
+
           pesoLiquido: numero(coluna(row, "Peso total liquido")),
+
           quantidade: 1,
+
           valorUnitario: numero(coluna(row, "Valor unitário do item")),
+
           valorTotal: 0,
         }));
 
         const dadosNota = {
           numeroNfOriginal: numeroNf,
+
           importadoPor: {
             nome: responsavel,
             email: responsavelEmail,
           },
+
           importadoEm: new Date(),
+
           placa: texto(coluna(primeiraLinha, "Placa")),
+
           cliente: texto(coluna(primeiraLinha, "Cliente")),
+
           peso: numero(coluna(primeiraLinha, "Peso")),
+
           pesoLiquido: numero(coluna(primeiraLinha, "Peso total liquido")),
+
           vendedor: texto(coluna(primeiraLinha, "Vendedor")),
+
           codigoCliente: texto(coluna(primeiraLinha, "Código cliente")),
+
           cidade: texto(coluna(primeiraLinha, "Cidade")),
+
           bairro: texto(coluna(primeiraLinha, "Bairro")),
+
           endereco: texto(coluna(primeiraLinha, "Endereço")),
+
           motorista: texto(coluna(primeiraLinha, "Motorista")),
+
           unidade: texto(coluna(primeiraLinha, "Unidade")) || "kg",
+
           descricao: texto(coluna(primeiraLinha, "Descrição")),
+
           qtdItens: itens.length,
         };
 
-        return { numeroNf, dadosNota, itens };
+        return {
+          numeroNf,
+          dadosNota,
+          itens,
+        };
       },
     );
+
+    // ------------------------------------------
+    // Persistência em lotes
+    // ------------------------------------------
 
     const TAMANHO_LOTE = 10;
 
@@ -616,19 +792,28 @@ app.post("/api/importar-planilha", async (request, reply) => {
       await Promise.all(
         lote.map(async ({ numeroNf, dadosNota, itens }) => {
           await prisma.nota.upsert({
-            where: { numeroNf },
+            where: {
+              numeroNf,
+            },
+
             update: {
               ...dadosNota,
+
               itens: {
                 deleteMany: {},
+
                 create: itens,
               },
             },
+
             create: {
               numeroNf,
               ...dadosNota,
               valor: 0,
-              itens: { create: itens },
+
+              itens: {
+                create: itens,
+              },
             },
           });
         }),
@@ -641,7 +826,10 @@ app.post("/api/importar-planilha", async (request, reply) => {
     );
 
     await prisma.importacao.update({
-      where: { id: importacaoId },
+      where: {
+        id: importacaoId,
+      },
+
       data: {
         volume: notasAgrupadas.size,
         totalLinhas: rows.length,
@@ -652,8 +840,11 @@ app.post("/api/importar-planilha", async (request, reply) => {
 
     return {
       success: true,
+
       message: `Planilha importada com sucesso! ${notasAgrupadas.size} notas e ${totalItensImportados} itens processados.`,
+
       totalImportadas: notasAgrupadas.size,
+
       totalItens: totalItensImportados,
     };
   } catch (error) {
@@ -662,7 +853,10 @@ app.post("/api/importar-planilha", async (request, reply) => {
     if (importacaoId) {
       try {
         await prisma.importacao.update({
-          where: { id: importacaoId },
+          where: {
+            id: importacaoId,
+          },
+
           data: {
             status: "Erro",
             erros: 1,
@@ -689,7 +883,10 @@ app.post("/api/importar-planilha", async (request, reply) => {
 app.get("/api/importacoes", async (_request, reply) => {
   try {
     const importacoes = await prisma.importacao.findMany({
-      orderBy: { importadoEm: "desc" },
+      orderBy: {
+        importadoEm: "desc",
+      },
+
       take: 50,
     });
 
@@ -710,22 +907,207 @@ app.get("/api/importacoes", async (_request, reply) => {
 // ROTAS DE OCORRÊNCIAS
 // ==========================================
 
-app.get("/api/ocorrencias", async (request, reply) => {
+app.get("/api/ocorrencias", async (_request, reply) => {
   try {
     const ocorrencias = await prisma.ocorrencia.findMany({
-      orderBy: { criadoEm: "desc" },
+      orderBy: {
+        criadoEm: "desc",
+      },
+
       take: 50,
     });
-    return { total: ocorrencias.length, ocorrencias };
+
+    return {
+      total: ocorrencias.length,
+      ocorrencias,
+    };
   } catch (error) {
     app.log.error(error);
-    return reply.status(500).send({ error: "Erro ao buscar ocorrências." });
+
+    return reply.status(500).send({
+      error: "Erro ao buscar ocorrências.",
+    });
   }
 });
 
+// ==========================================
+// DETALHES DE UMA OCORRÊNCIA
+// ==========================================
+
+app.get("/api/ocorrencias/:id", async (request, reply) => {
+  try {
+    const { id } = request.params as {
+      id: string;
+    };
+
+    const ocorrencia = await prisma.ocorrencia.findUnique({
+      where: {
+        id,
+      },
+
+      include: {
+        comentarios: {
+          orderBy: {
+            criadoEm: "asc",
+          },
+        },
+      },
+    });
+
+    if (!ocorrencia) {
+      return reply.status(404).send({
+        error: "Ocorrência não encontrada.",
+      });
+    }
+
+    return {
+      success: true,
+      ocorrencia,
+    };
+  } catch (error) {
+    app.log.error(error);
+
+    return reply.status(500).send({
+      error: "Erro ao buscar detalhes da ocorrência.",
+    });
+  }
+});
+
+app.patch("/api/ocorrencias/:id/finalizar", async (request, reply) => {
+  try {
+    const { id } = request.params as {
+      id: string;
+    };
+
+    const body = request.body as {
+      finalizadoPor?: {
+        nome?: string;
+        email?: string;
+      };
+    };
+
+    const ocorrencia = await prisma.ocorrencia.findUnique({
+      where: { id },
+    });
+
+    if (!ocorrencia) {
+      return reply.status(404).send({
+        error: "Ocorrência não encontrada.",
+      });
+    }
+
+    if (ocorrencia.status === "finalizado") {
+      return reply.status(400).send({
+        error: "Esta ocorrência já está finalizada.",
+      });
+    }
+
+    const finalizadoPor = {
+      nome: String(body.finalizadoPor?.nome || "Sistema").trim(),
+      email: String(body.finalizadoPor?.email || "admin@sistema.com")
+        .trim()
+        .toLowerCase(),
+    };
+
+    const ocorrenciaAtualizada = await prisma.ocorrencia.update({
+      where: { id },
+
+      data: {
+        status: "finalizado",
+        finalizadoEm: new Date(),
+        finalizadoPor,
+      },
+    });
+
+    return {
+      success: true,
+      message: "Ocorrência finalizada com sucesso!",
+      ocorrencia: ocorrenciaAtualizada,
+    };
+  } catch (error) {
+    app.log.error(error);
+
+    return reply.status(500).send({
+      error: "Erro ao finalizar ocorrência.",
+    });
+  }
+});
+
+// ==========================================
+// ADICIONAR COMENTÁRIO À OCORRÊNCIA
+// ==========================================
+
+app.post("/api/ocorrencias/:id/comentarios", async (request, reply) => {
+  try {
+    const { id } = request.params as {
+      id: string;
+    };
+
+    const body = request.body as {
+      comentario?: string;
+      criadoPor?: string;
+      criadoPorEmail?: string;
+    };
+
+    const comentario = String(body.comentario || "").trim();
+
+    if (!comentario) {
+      return reply.status(400).send({
+        error: "O comentário é obrigatório.",
+      });
+    }
+
+    const ocorrencia = await prisma.ocorrencia.findUnique({
+      where: {
+        id,
+      },
+
+      select: {
+        id: true,
+      },
+    });
+
+    if (!ocorrencia) {
+      return reply.status(404).send({
+        error: "Ocorrência não encontrada.",
+      });
+    }
+
+    const novoComentario = await prisma.comentarioOcorrencia.create({
+      data: {
+        ocorrenciaId: id,
+
+        comentario,
+
+        criadoPor: String(body.criadoPor || "Sistema").trim(),
+
+        criadoPorEmail: body.criadoPorEmail
+          ? String(body.criadoPorEmail).trim().toLowerCase()
+          : null,
+      },
+    });
+
+    return reply.status(201).send({
+      success: true,
+      message: "Comentário adicionado com sucesso!",
+      comentario: novoComentario,
+    });
+  } catch (error) {
+    app.log.error(error);
+
+    return reply.status(500).send({
+      error: "Erro ao adicionar comentário.",
+    });
+  }
+});
+
+// ==========================================
+// REGISTRAR OCORRÊNCIA
+// ==========================================
+
 app.post("/api/ocorrencias", async (request, reply) => {
   try {
-    const body = request.body as any;
+    const body = request.body as RequestBody;
 
     if (!body.numeroNf || !body.motivo) {
       return reply.status(400).send({
@@ -737,8 +1119,13 @@ app.post("/api/ocorrencias", async (request, reply) => {
     const numeroNfNormalizado = String(body.numeroNf).trim();
 
     const nota = await prisma.nota.findUnique({
-      where: { numeroNf: numeroNfNormalizado },
-      include: { itens: true },
+      where: {
+        numeroNf: numeroNfNormalizado,
+      },
+
+      include: {
+        itens: true,
+      },
     });
 
     if (!nota) {
@@ -753,49 +1140,77 @@ app.post("/api/ocorrencias", async (request, reply) => {
     const novaOcorrencia = await prisma.ocorrencia.create({
       data: {
         numeroNf: nota.numeroNf,
+
         numeroNfOriginal: nota.numeroNfOriginal,
+
         placa: nota.placa,
         cliente: nota.cliente,
         vendedor: nota.vendedor,
         motorista: nota.motorista,
         cidade: nota.cidade,
+
         motivo: body.motivo,
+
         observacao: body.observacao,
+
         unidade: nota.unidade,
+
         itens: body.itens || nota.itens,
+
         totalQtd: body.totalQtd || 0,
+
         totalPeso: body.totalPeso || 0,
+
         totalValor: body.totalValor || 0,
+
         valorNota: nota.valor || 0,
+
         pesoNota: nota.peso || 0,
+
         para: body.para,
         cc: body.cc,
+
         criadoPor: body.criadoPor || {
           nome: "Sistema",
           email: "admin@sistema.com",
         },
+
         criadoPorEmail: body.criadoPorEmail || "admin@sistema.com",
+
         dataRef: body.dataRef || dataRefAtual,
       },
     });
 
     return {
       success: true,
+
       message: "Ocorrência registrada com sucesso!",
+
       ocorrencia: novaOcorrencia,
     };
   } catch (error) {
     app.log.error(error);
-    return reply.status(500).send({ error: "Erro ao registrar a ocorrência." });
+
+    return reply.status(500).send({
+      error: "Erro ao registrar a ocorrência.",
+    });
   }
 });
 
+// ==========================================
+// ENVIO DE E-MAIL DA OCORRÊNCIA
+// ==========================================
+
 app.post("/api/ocorrencias/:id/enviar-email", async (request, reply) => {
   try {
-    const { id } = request.params as { id: string };
+    const { id } = request.params as {
+      id: string;
+    };
 
     const ocorrencia = await prisma.ocorrencia.findUnique({
-      where: { id },
+      where: {
+        id,
+      },
     });
 
     if (!ocorrencia) {
@@ -804,8 +1219,6 @@ app.post("/api/ocorrencias/:id/enviar-email", async (request, reply) => {
       });
     }
 
-    // Busca a NF original para obter informações adicionais,
-    // como o código do cliente.
     const nota = await prisma.nota.findUnique({
       where: {
         numeroNf: ocorrencia.numeroNf,
@@ -819,7 +1232,9 @@ app.post("/api/ocorrencias/:id/enviar-email", async (request, reply) => {
 
     return {
       success: true,
+
       message: "E-mail enviado com sucesso!",
+
       emailId: resultado?.id || null,
     };
   } catch (error) {
@@ -833,6 +1248,10 @@ app.post("/api/ocorrencias/:id/enviar-email", async (request, reply) => {
     });
   }
 });
+
+// ==========================================
+// TESTE DE E-MAIL
+// ==========================================
 
 app.post("/api/teste-email", async (request, reply) => {
   try {
@@ -850,7 +1269,9 @@ app.post("/api/teste-email", async (request, reply) => {
 
     return {
       success: true,
+
       message: "E-mail de teste enviado com sucesso!",
+
       emailId: resultado?.id || null,
     };
   } catch (error) {
@@ -881,7 +1302,9 @@ app.post("/api/teste-email-template", async (request, reply) => {
 
     return {
       success: true,
+
       message: "Template enviado com sucesso!",
+
       emailId: resultado?.id || null,
     };
   } catch (error) {
@@ -900,22 +1323,32 @@ app.post("/api/teste-email-template", async (request, reply) => {
 // ROTAS DE RETENÇÕES
 // ==========================================
 
-app.get("/api/retencoes", async (request, reply) => {
+app.get("/api/retencoes", async (_request, reply) => {
   try {
     const retencoes = await prisma.retencao.findMany({
-      orderBy: { criadoEm: "desc" },
+      orderBy: {
+        criadoEm: "desc",
+      },
+
       take: 50,
     });
-    return { total: retencoes.length, retencoes };
+
+    return {
+      total: retencoes.length,
+      retencoes,
+    };
   } catch (error) {
     app.log.error(error);
-    return reply.status(500).send({ error: "Erro ao buscar retenções." });
+
+    return reply.status(500).send({
+      error: "Erro ao buscar retenções.",
+    });
   }
 });
 
 app.post("/api/retencoes", async (request, reply) => {
   try {
-    const body = request.body as any;
+    const body = request.body as RequestBody;
 
     if (
       !body.placa ||
@@ -930,63 +1363,113 @@ app.post("/api/retencoes", async (request, reply) => {
     }
 
     const placaNormalizada = String(body.placa).trim().toUpperCase();
+
     const dataRefAtual = new Date().toISOString().split("T")[0];
 
     const novaRetencao = await prisma.retencao.create({
       data: {
         placa: placaNormalizada,
+
         placaOriginal: body.placaOriginal || body.placa,
+
         nfOrigem: body.nfOrigem || body.nfs[0]?.numeroNf || "GERAL",
+
         nfs: body.nfs,
+
         quantidadeNfs: body.nfs.length,
+
         totalValor: body.totalValor || 0,
+
         totalPeso: body.totalPeso || 0,
+
         totalItens: body.totalItens || 0,
+
         motoristas: body.motoristas || [],
+
         vendedores: body.vendedores || [],
+
         motivo: body.motivo,
         para: body.para,
         cc: body.cc,
+
         criadoPor: body.criadoPor || {
           nome: "Sistema",
           email: "admin@sistema.com",
         },
+
         criadoPorEmail: body.criadoPorEmail || "admin@sistema.com",
+
         dataRef: body.dataRef || dataRefAtual,
       },
     });
 
     return {
       success: true,
+
       message: "Retenção consolidada e salva com sucesso!",
+
       retencao: novaRetencao,
     };
   } catch (error) {
     app.log.error(error);
-    return reply.status(500).send({ error: "Erro ao registrar a retenção." });
+
+    return reply.status(500).send({
+      error: "Erro ao registrar a retenção.",
+    });
   }
 });
 
 // ==========================================
 // INICIALIZAÇÃO DO SERVIDOR
 // ==========================================
+
 const start = async () => {
   try {
-    // Registrar Plugins do Fastify
-    await app.register(cors, { origin: true });
-    await app.register(multipart, {
-      limits: { fileSize: 10 * 1024 * 1024 }, // Limite de 10MB por arquivo
+    // ----------------------------------------
+    // CORS
+    // ----------------------------------------
+
+    await app.register(cors, {
+      origin: true,
+
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+
+      allowedHeaders: ["Content-Type", "Authorization"],
     });
-    // Registrar o Plugin do JWT
+
+    // ----------------------------------------
+    // Multipart
+    // ----------------------------------------
+
+    await app.register(multipart, {
+      limits: {
+        fileSize: 10 * 1024 * 1024,
+      },
+    });
+
+    // ----------------------------------------
+    // JWT
+    // ----------------------------------------
+
     await app.register(fastifyJwt, {
       secret: process.env.JWT_SECRET || "sua-chave-secreta-super-segura-jbs",
     });
 
+    // ----------------------------------------
+    // Servidor
+    // ----------------------------------------
+
     const port = Number(process.env.PORT) || 3001;
-    await app.listen({ port, host: "0.0.0.0" });
+
+    await app.listen({
+      port,
+      host: "0.0.0.0",
+    });
+
     console.log(`🚀 Servidor Fastify rodando na porta ${port}`);
-  } catch (err) {
-    app.log.error(err);
+  } catch (error) {
+    app.log.error(error);
+
     process.exit(1);
   }
 };
